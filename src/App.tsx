@@ -36,6 +36,7 @@ export function parseOptions(url: URL, freshSeed: () => number): FightOptions {
 }
 
 const DEFAULTS_APPLIED_KEY = "awakened-leviathan-sim:keybinds-v2";
+const SOUND_DEFAULT_APPLIED_KEY = "awakened-leviathan-sim:sound-v1";
 const CONTROL_PANEL_SCALE = 3;
 const CONTROL_PANEL_FILL = 0.75;
 const MINIMAP_SCALE = 1.6;
@@ -45,6 +46,13 @@ function applyFirstRunKeybinds(): void {
   if (window.localStorage.getItem(DEFAULTS_APPLIED_KEY)) return;
   Settings.set({ inventory_key: "F1", prayer_key: "F2", equipment_key: "F3", spellbook_key: "F4" });
   window.localStorage.setItem(DEFAULTS_APPLIED_KEY, "1");
+}
+
+/** Sound starts on, once; turning it off sticks. Browsers hold audio back until the first click. */
+function applyFirstRunSound(): void {
+  if (window.localStorage.getItem(SOUND_DEFAULT_APPLIED_KEY)) return;
+  Settings.set({ playsAudio: true });
+  window.localStorage.setItem(SOUND_DEFAULT_APPLIED_KEY, "1");
 }
 
 /** Runs one SDK layout step as if the UI scale were `scale`; the setting itself scales every part of the UI at once. */
@@ -80,6 +88,7 @@ function createTrainer() {
   CacheRender.configure(new URL("osrs-assets/manifest.json", window.location.href).href);
   Settings.readFromStorage();
   applyFirstRunKeybinds();
+  applyFirstRunSound();
   enlargeControlPanel();
   enlargeMinimap();
   const options = parseOptions(new URL(window.location.href), () => crypto.getRandomValues(new Uint32Array(1))[0]);
@@ -122,7 +131,6 @@ function Controls({ options }: Readonly<{ options: FightOptions }>) {
         Bite reach <input id="bite" type="checkbox" checked={bite} onChange={(event) => setBite(event.target.checked)} />
       </label>
       <button id="restart" type="submit">Restart</button>
-      <button id="keybinds" type="button" onClick={() => ControlPanelController.controller.setActiveControl("SETTINGS")}>Keybinds</button>
       <label>
         Sound <input id="sound" type="checkbox" checked={playsAudio} onChange={(event) => Settings.set({ playsAudio: event.target.checked })} />
       </label>

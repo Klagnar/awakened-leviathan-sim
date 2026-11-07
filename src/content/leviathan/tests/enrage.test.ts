@@ -1,8 +1,9 @@
 import { ControlPanelController, DragonArrows, Karambwan, NecklaceOfAnguish, Random, TileMarker } from "osrs-sdk";
 import { Anglerfish, LeviathanTwistedBow, PhoenixNecklace, SeekingDragonArrows, WebweaverBow } from "../gear/items";
 import { DEBRIS, ENRAGE, ITEM_STATS, PATHFINDER, SEQ, SPOT, TORNADO } from "../data";
+import { Debris } from "../entities/scenery";
 import { spawnCornerIndex } from "../fight";
-import { BOSS_ANCHOR, CORNER_INDICES, PATH_CORNERS, PATH_LOOP, PATH_RING, cutsLoop, distanceToPool, edgeTiles, floorTiles, inBiteReach, isFloor, reachable } from "../geometry";
+import { BOSS_ANCHOR, CORNER_INDICES, PATH_CORNERS, PATH_LOOP, cutsLoop, distanceToPool, edgeTiles, floorTiles, inBiteReach, isFloor, reachable } from "../geometry";
 import { chebyshev, sameTile, tile } from "../types";
 import type { HitRecord, Tile } from "../types";
 import { startFight } from "./harness";
@@ -309,6 +310,48 @@ describe("falling rocks", () => {
     run.player().moveTo(open.x, open.y);
   }
 
+  test("a shadow can be walked over until its rock lands", () => {
+    const run = startFight();
+    run.player().currentStats.hitpoint = 1_000_000;
+    let landed = 0;
+    for (let i = 0; i < 3 * DEBRIS.plusEveryTicks.value.max; i++) {
+      run.place(PATH_CORNERS[1]);
+      run.tick();
+      expect(floorTiles().filter((at) => run.fight().fallingRockOn(at) && run.fight().blocked(at))).toEqual([]);
+      landed = floorTiles().filter((at) => run.fight().blocked(at)).length;
+    }
+    expect(landed).toBeGreaterThan(edgeTiles().length);
+  });
+
+  test("walking to a tile no one can stand on walks to the nearest open tile instead", () => {
+    const run = startFight();
+    const player = run.player();
+    player.currentStats.hitpoint = 1_000_000;
+    run.tick();
+    const start = player.tile;
+    const inPool = tile(BOSS_ANCHOR.x + 3, BOSS_ANCHOR.y - 3);
+    expect(isFloor(inPool)).toBe(false);
+    player.moveTo(inPool.x, inPool.y);
+    run.tick(15);
+    expect(sameTile(player.tile, start)).toBe(false);
+    expect(distanceToPool(player.tile)).toBe(2);
+  });
+
+  test("clicking a rock among other rocks walks to the nearest open tile instead of standing still", () => {
+    const run = startFight();
+    const player = run.player();
+    player.currentStats.hitpoint = 1_000_000;
+    run.tick();
+    run.place(PATH_LOOP[0]);
+    const rock = PATH_LOOP[5];
+    const square = [[0, 0], [-1, 0], [0, -1], [-1, -1]].map(([dx, dy]) => tile(rock.x + dx, rock.y + dy)).filter(isFloor);
+    for (const at of square) run.region.addEntity(new Debris(run.region, at));
+    player.moveTo(rock.x, rock.y);
+    run.tick(4);
+    expect(sameTile(player.tile, PATH_LOOP[0])).toBe(false);
+    expect(chebyshev(player.tile, rock)).toBeLessThanOrEqual(2);
+  });
+
   test("nothing falls as the phase starts; then single rocks a few tiles away now and then, and rarer '+'s of blockers, never on the player", () => {
     const run = startFight();
     const player = run.player();
@@ -486,7 +529,7 @@ describe("pre-enrage debris", () => {
 });
 
 describe("the tornado", () => {
-  test("starts a few tiles behind the player, gains on them at the corners, and never goes over rocks", () => {
+  test("starts a few tiles behind the player and never catches one who keeps up with the pathfinder", () => {
     const run = startFight();
     const player = run.player();
     player.currentStats.hitpoint = 1_000_000;
@@ -501,7 +544,7 @@ describe("the tornado", () => {
       run.tick();
       expect(run.fight().blocked(tornado.tile)).toBe(false);
     }
-    expect(run.fight().tally.tornadoTaken).toBeGreaterThan(0);
+    expect(run.fight().tally.tornadoTaken).toBe(0);
   });
 
   test("paths around blocker rocks, which makes its route longer", () => {
@@ -523,6 +566,25 @@ describe("the tornado", () => {
     const open = walk(() => false);
     const allButMeleeLane = (at: Tile) => at.x === PATH_LOOP[mid].x && distanceToPool(at) > 2;
     expect(walk(allButMeleeLane)).toBeGreaterThan(open);
+  });
+
+  test("walks the player's own path, in their lane and without cutting corners", () => {
+    const run = startFight();
+    const player = run.player();
+    player.currentStats.hitpoint = 1_000_000;
+    const tornado = run.fight().tornado;
+    const behind = TORNADO.startsBehind.value;
+    const start = PATH_LOOP.findIndex((at) => sameTile(at, player.tile));
+    const loop = (i: number) => PATH_LOOP[(i + PATH_LOOP.length) % PATH_LOOP.length];
+    const walked = Array.from({ length: behind + 1 }, (_, i) => loop(start - behind + i));
+    for (let i = 1; i <= PATH_LOOP.length; i++) {
+      walked.push(loop(start + i));
+      run.place(loop(start + i));
+      player.currentStats.prayer = 99;
+      run.tick();
+      expect(walked.some((at) => sameTile(at, tornado.tile))).toBe(true);
+    }
+    expect(run.fight().tally.tornadoTaken).toBe(0);
   });
 
   test("rocks never fall so as to close the way round the pool or wall any floor off", () => {
@@ -548,6 +610,30 @@ describe("the tornado", () => {
       }
       expect(floorTiles().filter((at) => run.fight().blocked(at)).length).toBeGreaterThan(0);
     }
+  });
+
+  test("a player who falls behind and runs back in front of the pathfinder wins back the lost ground", () => {
+    const run = startFight();
+    const player = run.player();
+    player.currentStats.hitpoint = 1_000_000;
+    player.running = true;
+    const loopIndex = (at: Tile) => PATH_LOOP.reduce((best, t, i) => (chebyshev(t, at) < chebyshev(PATH_LOOP[best], at) ? i : best), 0);
+    const lag = 3;
+    for (let cycle = 0; cycle < 4 * TORNADO.startsBehind.value; cycle++) {
+      for (let i = 0; i < lag; i++) {
+        player.currentStats.prayer = 99;
+        player.currentStats.run = 10_000;
+        run.tick();
+      }
+      for (let i = 0; i < 2 * lag; i++) {
+        const ahead = PATH_LOOP[(loopIndex(run.pathfinder().tile) + 2) % PATH_LOOP.length];
+        player.moveTo(ahead.x, ahead.y);
+        player.currentStats.prayer = 99;
+        player.currentStats.run = 10_000;
+        run.tick();
+      }
+    }
+    expect(run.fight().tally.tornadoTaken).toBe(0);
   });
 
   test("catches a player who lags further and further behind the pathfinder", () => {
@@ -591,19 +677,16 @@ describe("the tornado", () => {
     expect(step).toEqual(tile(from.x, from.y + 1));
   });
 
-  test("cuts corners through the melee tiles but never through the pool", () => {
+  test("never steps through the pool, even to reach the far side", () => {
     const run = startFight();
     const tornado = run.fight().tornado;
     tornado.setLocation({ ...PATH_LOOP[0] });
     const opposite = PATH_LOOP[Math.floor(PATH_LOOP.length / 2)];
-    let deepest = distanceToPool(tornado.tile);
     for (let next = tornado.nextStepToward(opposite, () => false); next; next = tornado.nextStepToward(opposite, () => false)) {
       expect(isFloor(next)).toBe(true);
       tornado.setLocation({ ...next });
-      deepest = Math.min(deepest, distanceToPool(next));
     }
-    expect(deepest).toBeLessThan(PATH_RING.value);
-    expect(deepest).toBeGreaterThanOrEqual(2);
+    expect(tornado.tile).toEqual(opposite);
   });
 
   test("vanishes after a hit and comes back on the tile where it hit", () => {
@@ -626,7 +709,8 @@ describe("the tornado", () => {
       ticksGone++;
     }
     expect(ticksGone).toBe(TORNADO.goneAfterHit.value + 1);
-    expect(chebyshev(tornado.tile, hitAt)).toBeLessThanOrEqual(1);
+    // It has had a tick to move, and closes in up to two tiles a tick on a player who is not keeping ahead of it.
+    expect(chebyshev(tornado.tile, hitAt)).toBeLessThanOrEqual(2);
   });
 });
 

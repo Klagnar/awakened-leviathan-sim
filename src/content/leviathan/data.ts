@@ -203,11 +203,11 @@ export const TORNADO = {
     "unverified",
     "[WS] 'luring the tornado as south as possible to get a head-start once starting the phase'; owner: it trails just behind as the enrage starts, never waiting round a corner",
   ),
-  /** The pathfinder's pace, on a shortest walk to the player round the rocks, diagonals and the melee tiles included. */
+  /** The pathfinder's pace round the loop, along the tiles the player walked. */
   tilesPerTick: fact(
     1,
     "unverified",
-    "owner: same pace as the pathfinder; it cuts corners through the melee tiles but not through the boss, and it paths around the blocker rocks, which can make its route longer",
+    "owner: same pace as the pathfinder, following the player's path; a player who keeps up with the pathfinder is not caught, and ground lost by falling behind comes back on getting in front again",
   ),
   damage: fact({ min: 40, max: 50 }, "unverified", "[WS] 'This will deal 40+ damage if it makes contact'"),
   /** Ticks it is gone after a hit before it comes back on the tile where it hit. */

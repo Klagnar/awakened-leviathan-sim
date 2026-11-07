@@ -38,18 +38,23 @@ function stepsTo(target: Tile, passable: Passable): Map<string, number> {
 /** [WS] Awakened: the tornado that spawns at 50% and chases the player. It stays on the floor. */
 export class Tornado extends ScriptedNpc {
   /**
-   * The next tile on a shortest walk to `target` around `blocked` rocks; null when it is already there. It cuts corners
-   * through the melee tiles but never through the pool. Only when rocks wall the player off does it go over them.
+   * The next tile on a shortest walk to `target` around `blocked` rocks, never through the pool; null when it is already
+   * there. Only when rocks wall the target off does it go over them. Of the steps that are as short, it takes the one
+   * that best lines it up with the target's row or column.
    */
   nextStepToward(target: Tile, blocked: Passable): Tile | null {
     if (sameTile(this.tile, target)) return null;
+    const offLine = (at: Tile): number => Math.min(Math.abs(at.x - target.x), Math.abs(at.y - target.y));
     const rules: readonly Passable[] = [(at) => isFloor(at) && !blocked(at), isFloor];
     for (const passable of rules) {
       const distance = stepsTo(target, passable);
       const here = distance.get(key(this.tile)) ?? Infinity;
       const steps = neighbours(this.tile, passable).filter((at) => (distance.get(key(at)) ?? Infinity) < here);
       if (steps.length === 0) continue;
-      steps.sort((a, b) => (distance.get(key(a)) ?? Infinity) - (distance.get(key(b)) ?? Infinity) || chebyshev(a, target) - chebyshev(b, target));
+      steps.sort(
+        (a, b) =>
+          (distance.get(key(a)) ?? Infinity) - (distance.get(key(b)) ?? Infinity) || offLine(a) - offLine(b) || chebyshev(a, target) - chebyshev(b, target),
+      );
       return steps[0];
     }
     return null;

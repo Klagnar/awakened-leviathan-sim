@@ -33,6 +33,14 @@ const key = ({ x, y }: Tile): string => `${x},${y}`;
 
 const plusTiles = (centre: Tile): Tile[] => DEBRIS.plus.value.map(([dx, dy]) => tile(centre.x + dx, centre.y + dy)).filter(isFloor);
 
+/** The most tiles a player covers in a tick, running. */
+const RUN_TILES = 2;
+/** The most loop tiles a run covers: two diagonal steps across one of the loop's corners skip two tiles each. */
+const LOOP_TILES_PER_RUN = 2 * RUN_TILES;
+
+/** Where a tile is along the pathfinder's loop: the index of the nearest loop tile. */
+const loopIndexOf = (at: Tile): number => PATH_LOOP.reduce((best, t, i) => (chebyshev(t, at) < chebyshev(PATH_LOOP[best], at) ? i : best), 0);
+
 /** First corner, clockwise from north-west, that debris has not blocked. [WP] */
 export function spawnCornerIndex(blocked: (at: Tile) => boolean): number {
   return CORNER_INDICES.find((index) => !blocked(PATH_LOOP[index])) ?? CORNER_INDICES[0];
@@ -102,6 +110,14 @@ export class EnrageFight implements BossHooks {
   private onBlue = false;
   private readonly blockers = new Map<string, Debris>();
   private readonly floor = floorTiles();
+  /** The tiles the player has walked that the tornado has yet to reach, oldest first; the last is the player's. */
+  private trail: Tile[];
+  /**
+   * How far behind the player the tornado is, counted along the pathfinder's loop rather than along the trail, so the
+   * player's own route round rocks or across corners neither gains nor loses them ground.
+   */
+  private tornadoBehind: number = TORNADO.startsBehind.value;
+  private playerWas: Tile;
 
   constructor(
     private readonly region: Region,
@@ -116,6 +132,9 @@ export class EnrageFight implements BossHooks {
     this.rng = new Rng(options.seed);
     if (DEBRIS.preEnrageEdges.value) for (const at of edgeTiles()) this.block(at);
     this.pathIndex = spawnCornerIndex((at) => this.blocked(at));
+    const behind = TORNADO.startsBehind.value;
+    this.trail = Array.from({ length: behind }, (_, i) => PATH_LOOP[(this.pathIndex - behind + 1 + i + PATH_LOOP.length) % PATH_LOOP.length]);
+    this.playerWas = this.spawnTile;
   }
 
   blocked(at: Tile): boolean {
@@ -288,8 +307,9 @@ export class EnrageFight implements BossHooks {
     this.onBlue = this.safeToStand(this.player.tile);
   }
 
-  /** It chases the player a step at a time and hits on contact, then vanishes and comes back where it hit. */
+  /** It follows the player's path a step at a time and hits on contact, then vanishes and comes back where it hit. */
   private moveTornado(): void {
+    this.recordTrail();
     const state = this.tornadoState;
     switch (state.kind) {
       case "chasing":
@@ -311,17 +331,51 @@ export class EnrageFight implements BossHooks {
     }
   }
 
+  /** The player's steps go on the trail, and how far they got round the loop counts towards the tornado's gap. */
+  private recordTrail(): void {
+    for (const at of [...this.player.stepsThisTick, this.player.tile]) this.addToTrail(at);
+    const length = PATH_LOOP.length;
+    const moved = ((loopIndexOf(this.player.tile) - loopIndexOf(this.playerWas) + length + length / 2) % length) - length / 2;
+    this.tornadoBehind += Math.min(Math.max(moved, -LOOP_TILES_PER_RUN), LOOP_TILES_PER_RUN);
+    this.playerWas = this.player.tile;
+  }
+
+  /** Walking back over the trail cuts off the loop, so a player who turns round meets the tornado sooner. */
+  private addToTrail(at: Tile): void {
+    const seen = this.trail.findIndex((t) => sameTile(t, at));
+    if (seen >= 0) this.trail = this.trail.slice(0, seen + 1);
+    else this.trail.push(at);
+  }
+
+  /**
+   * It closes in at the pathfinder's pace, counted round the loop, so a player who keeps up with the pathfinder is never
+   * caught however they go round rocks or corners, and one who stops, falls back or turns round is. It walks the
+   * player's trail, as many steps a tick as keep it that far behind. A rock that lands on the trail slows it a tile.
+   */
   private chaseWithTornado(): void {
-    for (let i = 0; i < TORNADO.tilesPerTick.value; i++) {
-      const next = this.tornado.nextStepToward(this.player.tile, (at) => this.blocked(at));
+    const trailBefore = this.trail.length;
+    this.trail = this.trail.filter((at) => !this.blocked(at));
+    this.tornadoBehind += trailBefore - this.trail.length - TORNADO.tilesPerTick.value;
+    while (this.trail.length > 0 && sameTile(this.trail[0], this.tornado.tile)) this.trail.shift();
+    const steps = Math.min(Math.max(this.trail.length - this.tornadoBehind, 0), RUN_TILES);
+    for (let i = 0; i < steps && !this.tornadoHits(); i++) {
+      while (this.trail.length > 0 && sameTile(this.trail[0], this.tornado.tile)) this.trail.shift();
+      const next = this.tornado.nextStepToward(this.trail.length > 0 ? this.trail[0] : this.player.tile, (at) => this.blocked(at));
       if (next) this.tornado.stepTo(next);
     }
-    if (!sameTile(this.tornado.tile, this.player.tile)) return;
+    this.tornadoHits();
+  }
+
+  private tornadoHits(): boolean {
+    if (this.tornadoState.kind !== "chasing" || !sameTile(this.tornado.tile, this.player.tile)) return false;
     const { min, max } = TORNADO.damage.value;
     const damage = Math.min(this.rng.int(min, max), this.player.currentStats.hitpoint);
     this.player.addProjectile(new UnprotectableHit(this.tornado, this.player, damage, "tornado", this.elapsed, this));
     this.tornadoState = { kind: "gone", returnsAt: this.tornado.tile, ticksLeft: TORNADO.goneAfterHit.value };
     this.region.removeMob(this.tornado);
+    this.trail = [];
+    this.tornadoBehind = 0;
+    return true;
   }
 
   private block(at: Tile): void {
@@ -406,13 +460,28 @@ export class EnrageFight implements BossHooks {
     this.region.addEntity(new GroundSpot(this.region, at, spot, { maxTicks: DEBRIS.warningTicks.value + 3 }));
   }
 
-  /** A rock's hit is queued a tick before it lands; its shadow stays until it has landed. A blocker stays unless it lands on the player. */
+  /**
+   * A rock's hit is queued a tick before it lands; its shadow stays until it has landed, and anyone can walk over it
+   * until then. A blocker stays from the tick it lands unless it lands on the player.
+   */
   private landRocks(): void {
+    for (const rock of this.rocks.filter((r) => r.landsAt === this.elapsed && r.kind === "stays")) {
+      if (!sameTile(this.player.tile, rock.tile) && this.leavesWayRound(rock.tile)) this.block(rock.tile);
+    }
     this.rocks = this.rocks.filter((rock) => rock.landsAt > this.elapsed);
     for (const rock of this.rocks.filter((r) => r.landsAt - 1 === this.elapsed)) {
       this.player.addProjectile(new RockHit(this.boss, this.player, rock.tile, rock.droppedAt, this));
-      if (rock.kind === "stays" && !sameTile(this.player.tile, rock.tile)) this.block(rock.tile);
     }
+  }
+
+  /**
+   * Shadows can be walked through, so a player can stand in the middle of a '+' as it lands. A rock that would then shut
+   * them in, or close the way round the pool, breaks instead of staying.
+   */
+  private leavesWayRound(rock: Tile): boolean {
+    const withRock = (at: Tile): boolean => this.blocked(at) || sameTile(at, rock);
+    if (cutsLoop(withRock)) return false;
+    return reachable(this.player.tile, withRock).size === this.floor.filter((at) => !withRock(at)).length;
   }
 
   private checkEnd(): void {

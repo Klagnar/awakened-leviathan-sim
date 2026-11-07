@@ -35,7 +35,7 @@ URL options: `?hp=19.9` (boss HP percentage), `?seed=123` (replays a run), `?aur
   overheal to 121. You start at 120 Hitpoints, as if you ate an angler before the enrage, and 112 Ranged, as if you
   just sipped a ranging potion, on the prayer tab with Rigour and Protect from Range on.
 - **Controls**: F1 opens the inventory, F2 the prayers, F3 the equipment and F4 the spellbook. These are set on your
-  first visit; change them under Keybinds and your choice sticks. The side panel grows up to three times its usual size
+  first visit; change them in the settings tab and your choice sticks. Sound starts on; untick Sound and it stays off. The side panel grows up to three times its usual size
   as far as the window height allows, and the minimap and its orbs are drawn 1.6 times larger so the special attack orb
   is easy to hit.
 - **The boss**: a ranged (max 41) or magic (max 55) orb every tick. If you stand next to the pool's rim (diagonals
@@ -52,7 +52,7 @@ URL options: `?hp=19.9` (boss HP percentage), `?seed=123` (replays a run), `?aur
   debris along the walls. Nothing falls on you as the enrage starts. Every 3 to 6 ticks a single rock falls 2 to 5 tiles
   from you, never on your tile, and breaks when it lands: something to avoid as you move. Every 25 to 40 ticks a '+' of
   five lands centred 3 to 6 tiles from you and stays as blockers for you and the tornado, still there when you
-  come round the loop again. A '+' never lands where it would close the way round the pool or wall off any floor. Each rock lands three ticks after its shadow appears; the shadow turns darker on its last
+  come round the loop again. A '+' never lands where it would close the way round the pool or wall off any floor. A shadow can be walked through; only a landed rock blocks, and clicking a rock walks you to the nearest open tile. Each rock lands three ticks after its shadow appears; the shadow turns darker on its last
   tick, when it is too late to move. Step off before then to dodge it; a dodged rock leaves no hitsplat, and a blocker
   that lands on you hits you instead of staying. All rocks clear when the boss dies, and you cheer under the fireworks
   for 99 in every skill.
@@ -60,9 +60,10 @@ URL options: `?hp=19.9` (boss HP percentage), `?seed=123` (replays a run), `?aur
   an orb through the right prayer and how many tiles outside the aura you stood, a falling rock, the tornado, or the
   roar as the enrage starts.
 - **The tornado**: it has been out since 50% and starts 8 tiles behind you on the pathfinder's loop, where you lured
-  it. It moves a tile a tick, the pathfinder's pace, on the shortest way to you, diagonals included, cutting corners
-  through the melee tiles but never through the pool, so it gains on you at the corners. It paths around the blocker
-  rocks like you do, so a '+' on the track can slow it down; it only goes over rocks when they wall you off. It hits for 40 to 50 when it reaches your tile, then vanishes for 4 ticks and comes back on the tile where it hit you.
+  it. It closes in at the pathfinder's pace, a tile a tick counted round the loop, walking the tiles you walked: keep
+  up with the pathfinder and it never reaches you, however you go round rocks or corners, but stop, fall back or turn
+  round and it closes in, up to two tiles a tick. Ground you lose by falling behind comes back when you run in front of
+  the pathfinder again. A rock that lands on your path slows it a tile. It hits for 40 to 50 when it reaches your tile, then vanishes for 4 ticks and comes back on the tile where it hit you.
 - **Items**: the Webweaver's special fires four hits for 50% energy, with doubled accuracy and each hit up to 40% of
   the max. Inside the pathfinder's aura each spec takes 3.5 to 5% of the boss's HP instead (24 to 33 a hit), so two
   specs take 7 to 10%. The Phoenix necklace restores 30% of your HP once when you drop to 20% or below, and cancels hits still in
@@ -86,7 +87,7 @@ Every number lives in `src/content/leviathan/data.ts` with its source and a trus
 | Roar length before the first orb | 2 ticks | Not measured |
 | Tornado speed, damage and time gone after a hit | 1 tile a tick, 40 to 50, 4 ticks | The wiki says only that it chases you and hits for "40+"; vanishing and coming back where it hit is from play |
 | Tornado start tile | 8 tiles behind you on the loop | The guide says to lure it south before the enrage |
-| Tornado route | Straight steps, never closer to the pool than you, over rocks | From play: ahead of the pathfinder on the outside it never catches you; the wiki says only that it chases you |
+| Tornado route | Along the tiles you walked, round any rock that lands on them | From play; the wiki says only that it chases you |
 | Webweaver spec in the aura | 3.5 to 5% of the boss's HP a spec | Players saw hits at the full max; the wiki gives 40% of max and ~180 for two specs; tuned to two specs taking 7 to 10% |
 
 The wiki's "Abyssal protector" is a Guardians of the Rift pet. The NPC that buffs you in this fight is the **abyssal
