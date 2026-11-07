@@ -1,0 +1,248 @@
+diff --git a/src/sdk/rendering/CacheRenderInstancedModel.ts b/src/sdk/rendering/CacheRenderInstancedModel.ts
+index 637e62d..53b2800 100644
+--- a/src/sdk/rendering/CacheRenderInstancedModel.ts
++++ b/src/sdk/rendering/CacheRenderInstancedModel.ts
+@@ -18,10 +18,16 @@ const DEFAULT_MAX_INSTANCES = 256;
+ let hiddenMatrixValue: THREE.Matrix4 | undefined;
+ const hiddenMatrix = () => hiddenMatrixValue ??= new THREE.Matrix4().makeScale(0, 0, 0);
+ 
++function sameValues(left: ArrayLike<number>, right: ArrayLike<number>) {
++  if (left.length !== right.length) return false;
++  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
++  return true;
++}
++
+ type AnimationFrameMesh = { mesh: THREE.InstancedMesh; active: Set<number> };
+ type Pool = {
+   ready: Promise<void>; capacity: number; next: number; free: number[]; active: Set<number>;
+-  frames: AnimationFrameMesh[]; scaleX: number; scaleY: number;
++  frames: AnimationFrameMesh[]; scaleX: number; scaleY: number; rotation: number;
+   animationId: number; animation?: CacheRenderAnimation; animationTotal: number; loopElapsed: number;
+   frameSoundPlayer: AnimationFrameSoundPlayer; frameSoundsReady: Promise<void>;
+ };
+@@ -107,7 +113,7 @@ export class CacheRenderInstancedModel implements Model {
+       const placement = this.reference.kind === "spotAnim" ? this.reference.spotAnims[0] : undefined;
+       pool = {
+         ready: Promise.resolve(), capacity: this.maxInstances, next: 0, free: [], active: new Set(), frames: [],
+-        scaleX: 1, scaleY: 1, animationId: -1, animationTotal: 0, loopElapsed: 0,
++        scaleX: 1, scaleY: 1, rotation: 0, animationId: -1, animationTotal: 0, loopElapsed: 0,
+         frameSoundPlayer: new AnimationFrameSoundPlayer(), frameSoundsReady: Promise.resolve(),
+       };
+       pool.ready = Promise.all(ids.map((id) => cachedPayload(bundle, id))).then((payloads) => {
+@@ -116,6 +122,9 @@ export class CacheRenderInstancedModel implements Model {
+         const metadata = spotPayload?.spotAnim ?? payload.spotAnim ?? {};
+         pool!.scaleX = (payload.scale ?? 1) * (metadata.resizeX ?? 128) / 128;
+         pool!.scaleY = (payload.scale ?? 1) * (metadata.resizeY ?? 128) / 128;
++        // A spotanim definition's rotation, in degrees clockwise seen from above: its _90 / _180 / _270 variants are one
++        // model turned (a crack piece growing east is the north piece turned 90). North is -z here, hence the sign.
++        pool!.rotation = -((metadata.rotation ?? 0) * Math.PI) / 180;
+         const groups = payload.vertexGroups ?? [];
+         const sources = payload.sourceVertices ?? [];
+         const baseAlphas = new Float32Array(
+@@ -153,15 +162,23 @@ export class CacheRenderInstancedModel implements Model {
+           payload.animayaScales ?? [],
+           animation,
+         );
++        // Every frame shares the index, and the colours while a frame's alphas match the frame before: one GPU buffer
++        // instead of one per frame. The basic material is unlit, so no normals.
++        const index = new THREE.BufferGeometry().setIndex(payload.indices ?? []).getIndex();
++        const hasColors = Boolean(payload.colors && payload.colors.length * 3 === payload.positions.length);
++        let lastAlphas: Float32Array | null = null;
++        let lastColor: THREE.BufferAttribute | null = null;
+         pool!.frames = frameData.map((frame) => {
+           const geometry = new THREE.BufferGeometry();
+-          geometry.setAttribute("position", new THREE.Float32BufferAttribute(frame.positions, 3));
+-          if (payload.colors && payload.colors.length * 3 === payload.positions.length) {
+-            const colors = cacheColorsToRgba(payload.colors, frame.alphas, spotPayload?.faceColors, recolor);
+-            geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 4));
++          geometry.setAttribute("position", new THREE.BufferAttribute(frame.positions, 3));
++          if (hasColors) {
++            if (!lastColor || !sameValues(lastAlphas!, frame.alphas)) {
++              lastColor = new THREE.BufferAttribute(cacheColorsToRgba(payload.colors!, frame.alphas, spotPayload?.faceColors, recolor), 4);
++              lastAlphas = frame.alphas;
++            }
++            geometry.setAttribute("color", lastColor);
+           }
+-          geometry.setIndex(payload.indices ?? []);
+-          geometry.computeVertexNormals();
++          geometry.setIndex(index);
+           const mesh = new THREE.InstancedMesh(geometry, material, pool!.capacity);
+           mesh.frustumCulled = false;
+           mesh.count = 0;
+@@ -251,7 +268,7 @@ export class CacheRenderInstancedModel implements Model {
+       this.transform.position.y += placement?.height ?? 0;
+       this.transform.rotation.order = "YXZ";
+       const basisRotation = oneShot ? 0 : Math.PI / 2;
+-      this.transform.rotation.set(pitch, rotation + basisRotation + (placement?.rotation ?? 0) * Math.PI / 1024, 0);
++      this.transform.rotation.set(pitch, rotation + basisRotation + pool.rotation + (placement?.rotation ?? 0) * Math.PI / 1024, 0);
+       this.transform.scale.set(pool.scaleX, pool.scaleY, pool.scaleX);
+       this.transform.updateMatrix();
+ 
+diff --git a/src/sdk/rendering/CacheRenderModel.ts b/src/sdk/rendering/CacheRenderModel.ts
+index dec613d..5a84fd2 100644
+--- a/src/sdk/rendering/CacheRenderModel.ts
++++ b/src/sdk/rendering/CacheRenderModel.ts
+@@ -66,6 +66,11 @@ export type CacheRenderModelOptions = {
+   basisRotation?: number;
+   /** Repeat spotanim sequences for the lifetime of the owning renderable. */
+   loopSpotAnims?: boolean;
++  /**
++   * The spotanims gameplay can attach to this model. By default a model builds a mesh for every spotanim in the bundle,
++   * which is right for an actor that may get any; scenery and small NPCs list theirs (or none) and skip that work.
++   */
++  spotAnims?: readonly number[];
+ };
+ 
+ /** Three.js implementation for decoded cache geometry. Cache extraction owns the conversion from OSRS frames to this payload. */
+@@ -258,9 +263,12 @@ export class CacheRenderModel implements Model, RenderableListener {
+       // attach a Spotanim later without invalidating/rebuilding the base model.
+       // Spotanim-only effects should load only the requested graphic. Actor
+       // models retain the eager path because gameplay may attach effects later.
++      const listed = this.options.spotAnims;
+       const spotIds = this.reference.kind === "spotAnim"
+         ? bundle.spotAnimIds(this.reference)
+-        : bundle.allSpotAnimIds();
++        : listed
++          ? listed.map((id) => bundle.manifest.spotAnims?.[String(id)]).filter((id): id is string => Boolean(id))
++          : bundle.allSpotAnimIds();
+       const spotPayloads = await Promise.all(spotIds.map((id) => cachedPayload(bundle, id)));
+       if (generation !== this.modelGeneration) return;
+       const payload = mergePayloads(payloads);
+diff --git a/src/sdk/rendering/utils/colors.ts b/src/sdk/rendering/utils/colors.ts
+index 4df4409..5eb96c8 100644
+--- a/src/sdk/rendering/utils/colors.ts
++++ b/src/sdk/rendering/utils/colors.ts
+@@ -12,10 +12,19 @@ export function cacheAlphaToOpacity(alpha: number) {
+   return 1 - Math.max(0, Math.min(255, alpha)) / 255;
+ }
+ 
+-/** Convert a packed cache display/sRGB colour to Three.js working-space RGB. */
+-export function cacheColorToRgb(value: number): [number, number, number] {
+-  const color = new THREE.Color(value);
+-  return [color.r, color.g, color.b];
++// A model reuses a small palette across thousands of vertices and every animation frame, and the sRGB to linear
++// conversion is the hot path of building and animating effects, so each packed colour is converted once.
++const workingRgb = new Map<number, readonly [number, number, number]>();
++
++/** Convert a packed cache display/sRGB colour to Three.js working-space RGB. The result is shared: do not mutate. */
++export function cacheColorToRgb(value: number): readonly [number, number, number] {
++  let rgb = workingRgb.get(value);
++  if (!rgb) {
++    const color = new THREE.Color(value);
++    rgb = [color.r, color.g, color.b];
++    workingRgb.set(value, rgb);
++  }
++  return rgb;
+ }
+ 
+ /** Resolve a spot-animation recolour before colour-space conversion. */
+@@ -24,8 +33,13 @@ export function resolveCacheColor(baseColor: number, faceColor?: number, recolor
+ }
+ 
+ export function cacheColorsToRgb(colors: number[]) {
+-  const values: number[] = [];
+-  colors.forEach((color) => values.push(...cacheColorToRgb(color)));
++  const values = new Float32Array(colors.length * 3);
++  for (let index = 0; index < colors.length; index++) {
++    const rgb = cacheColorToRgb(colors[index]);
++    values[index * 3] = rgb[0];
++    values[index * 3 + 1] = rgb[1];
++    values[index * 3 + 2] = rgb[2];
++  }
+   return values;
+ }
+ 
+@@ -36,12 +50,13 @@ export function cacheColorsToRgba(
+   faceColors?: number[],
+   recolor?: CacheRecolorMap,
+ ) {
+-  const values: number[] = [];
+-  colors.forEach((baseColor, index) => {
+-    values.push(
+-      ...cacheColorToRgb(resolveCacheColor(baseColor, faceColors?.[index], recolor)),
+-      cacheAlphaToOpacity(alphas[index] ?? 0),
+-    );
+-  });
++  const values = new Float32Array(colors.length * 4);
++  for (let index = 0; index < colors.length; index++) {
++    const rgb = cacheColorToRgb(resolveCacheColor(colors[index], faceColors?.[index], recolor));
++    values[index * 4] = rgb[0];
++    values[index * 4 + 1] = rgb[1];
++    values[index * 4 + 2] = rgb[2];
++    values[index * 4 + 3] = cacheAlphaToOpacity(alphas[index] ?? 0);
++  }
+   return values;
+ }
+diff --git a/src/sdk/rendering/utils/payloadUtils.ts b/src/sdk/rendering/utils/payloadUtils.ts
+index 5095eea..8920ff0 100644
+--- a/src/sdk/rendering/utils/payloadUtils.ts
++++ b/src/sdk/rendering/utils/payloadUtils.ts
+@@ -14,7 +14,7 @@ export function cachedPayload(bundle: CacheRenderBundle, assetId: string): Promi
+   const existing = decodedPayloadCache.get(key);
+   if (existing) return existing;
+ 
+-  const pending = bundle.fetchAsset(assetId).then(decodeCacheRenderPayload);
++  const pending = bundle.fetchAsset(assetId).then(decodeCacheRenderPayloadAsync);
+   decodedPayloadCache.set(key, pending);
+   pending.catch(() => {
+     if (decodedPayloadCache.get(key) === pending) decodedPayloadCache.delete(key);
+@@ -22,7 +22,8 @@ export function cachedPayload(bundle: CacheRenderBundle, assetId: string): Promi
+   return pending;
+ }
+ 
+-export function decodeCacheRenderPayload(bytes: ArrayBuffer): CacheRenderPayload {
++/** The encoded body after the magic and length header, once the header checks out. */
++function payloadBody(bytes: ArrayBuffer): Uint8Array {
+   const input = new Uint8Array(bytes);
+   if (input.length < 8 || String.fromCharCode(input[0], input[1], input[2], input[3]) !== CACHE_RENDER_PAYLOAD_MAGIC) {
+     throw new CacheRenderBundleError("manifest", "Invalid cache render binary payload");
+@@ -32,19 +33,44 @@ export function decodeCacheRenderPayload(bytes: ArrayBuffer): CacheRenderPayload
+   if (length !== input.length - 8) {
+     throw new CacheRenderBundleError("manifest", "Truncated cache render binary payload");
+   }
++  return input.slice(8);
++}
+ 
+-  let encoded = input.slice(8);
+-  // Extracted bundles use gzip for transfer efficiency. Keep accepting raw
+-  // JSON payloads so existing bundles remain valid.
+-  if (encoded[0] === 0x1f && encoded[1] === 0x8b) encoded = decompressSync(encoded);
++// Extracted bundles use gzip for transfer efficiency. Raw JSON payloads stay
++// valid so existing bundles keep loading.
++function isGzip(encoded: Uint8Array) {
++  return encoded[0] === 0x1f && encoded[1] === 0x8b;
++}
+ 
+-  const payload = JSON.parse(new TextDecoder().decode(encoded));
++function checkedPayload(payload: CacheRenderPayload): CacheRenderPayload {
+   if (payload.version !== CACHE_RENDER_PAYLOAD_VERSION || !Array.isArray(payload.positions) || payload.positions.length % 3) {
+     throw new CacheRenderBundleError("manifest", "Unsupported cache render payload schema");
+   }
+   return payload;
+ }
+ 
++export function decodeCacheRenderPayload(bytes: ArrayBuffer): CacheRenderPayload {
++  let encoded = payloadBody(bytes);
++  if (isGzip(encoded)) encoded = decompressSync(encoded);
++  return checkedPayload(JSON.parse(new TextDecoder().decode(encoded)));
++}
++
++type GzipStream = new (format: "gzip") => TransformStream<Uint8Array, Uint8Array>;
++
++/**
++ * The same decode, inflating with the browser's native DecompressionStream where it exists. fflate's JavaScript inflate
++ * of a fight's effects and models otherwise holds the main thread for seconds on a first load.
++ */
++export async function decodeCacheRenderPayloadAsync(bytes: ArrayBuffer): Promise<CacheRenderPayload> {
++  const NativeGzip = (globalThis as { DecompressionStream?: GzipStream }).DecompressionStream;
++  const encoded = payloadBody(bytes);
++  if (!isGzip(encoded) || !NativeGzip || typeof Response === "undefined") return decodeCacheRenderPayload(bytes);
++  const body = new Response(encoded).body;
++  if (!body) return decodeCacheRenderPayload(bytes);
++  const text = await new Response(body.pipeThrough(new NativeGzip("gzip"))).text();
++  return checkedPayload(JSON.parse(text));
++}
++
+ export function mergePayloads(payloads: CacheRenderPayload[]): CacheRenderPayload {
+   const nonEmpty = payloads.filter((payload) => (payload.indices?.length ?? 0) > 0 || payload.positions.length > 3);
+   // Mutable references allow concatenation without spread operations, which

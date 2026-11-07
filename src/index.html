@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, user-scalable=no" />
+    <title>Awakened Leviathan Simulator · Enrage Phase</title>
+    <meta name="description" content="Browser practice for the Awakened Leviathan's enraged phase: one-tick orbs, the abyssal pathfinder's aura and falling debris." />
+    <meta name="theme-color" content="#0f1a1a" />
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        overscroll-behavior: none;
+        background: black;
+        color: white;
+        font-family: sans-serif;
+      }
+
+      canvas {
+        image-rendering: pixelated;
+      }
+
+      #credit_line {
+        position: absolute;
+        bottom: 4px;
+        right: 8px;
+        max-width: 52ch;
+        margin: 0;
+        font-size: 11px;
+        text-align: right;
+        color: rgba(255, 255, 255, 0.55);
+        text-shadow: 1px 1px 0 black;
+        pointer-events: none;
+      }
+
+      #fight_status {
+        position: absolute;
+        top: 8px;
+        left: 92px;
+        margin: 0;
+        padding: 6px 10px;
+        background: rgba(8, 16, 16, 0.72);
+        border: 1px solid #2e5a5a;
+        font-family: "OSRS", sans-serif;
+        font-size: 18px;
+        color: #ff981f;
+        text-shadow: 1px 1px 0 black;
+        pointer-events: none;
+      }
+
+      #fight_status:empty {
+        display: none;
+      }
+
+      #drill_controls {
+        position: absolute;
+        bottom: 48px;
+        left: 4px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin: 0;
+        font-size: 12px;
+        text-shadow: 1px 1px 0 black;
+      }
+
+      #seed {
+        width: 10ch;
+      }
+
+      #hp {
+        width: 5ch;
+      }
+
+      #game_chat {
+        position: absolute;
+        bottom: 84px;
+        left: 4px;
+        max-width: 70ch;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 14px;
+        text-shadow: 1px 1px 0 black;
+        pointer-events: none;
+      }
+
+      @media (max-width: 900px), (max-height: 600px) {
+        #fight_status {
+          padding: 2px 6px;
+          font-size: 11px;
+        }
+
+        #credit_line {
+          max-width: 40ch;
+          font-size: 8px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="./main.js"></script>
+  </body>
+</html>
